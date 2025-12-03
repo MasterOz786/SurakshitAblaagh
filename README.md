@@ -1,176 +1,283 @@
-# Securelink E2EE Messaging System
+# SecureLink - End-to-End Encrypted Messaging System
 
-A secure end-to-end encrypted messaging and file sharing system built with Node.js/Express.
+A secure communication system providing end-to-end encryption (E2EE) for text messaging and file sharing, ensuring that messages and files never exist in plaintext outside the sender or receiver device.
 
-## Features
+## 🎯 Project Overview
 
-- ✅ **End-to-End Encryption**: Messages and files encrypted with AES-GCM
-- ✅ **Hybrid Cryptography**: RSA/ECC for key exchange, AES-GCM for content
-- ✅ **Secure Key Exchange**: ECDH-based key exchange protocol
-- ✅ **Replay Attack Protection**: Nonce tracking and timestamp validation
-- ✅ **MITM Attack Prevention**: Certificate pinning and public key verification
-- ✅ **Perfect Forward Secrecy**: Session keys derived from ephemeral keys
-- ✅ **File Sharing**: Encrypted file upload/download with chunking
-- ✅ **Security Logging**: Comprehensive audit trail
-- ✅ **Threat Modeling**: Security analysis and threat mitigation
+This project implements a complete E2EE messaging system with:
+- **Hybrid Cryptography**: Combining asymmetric encryption (RSA/ECC) with symmetric encryption (AES-GCM)
+- **Secure Key Exchange**: Custom protocol with digital signatures and key confirmation
+- **Attack Prevention**: MITM and replay attack protection
+- **Security Analysis**: Comprehensive threat modeling using STRIDE framework
 
-## Project Requirements Compliance
+## 🔐 Security Features
 
-✅ **No Forbidden Technologies**:
-- No Firebase or third-party authentication
-- No third-party E2EE libraries (Signal, Libsodium, OpenPGP.js)
-- No pre-built cryptography wrappers (CryptoJS, NodeForge, etc.)
-- Pure JavaScript implementations
-- Web Crypto API for client-side (when implemented)
+- **AES-256-GCM Encryption**: All messages encrypted with fresh IV per message
+- **Perfect Forward Secrecy**: Ephemeral keys for each session
+- **Replay Protection**: Nonces, timestamps, and sequence numbers
+- **MITM Prevention**: Digital signatures in key exchange
+- **Client-Side Only Decryption**: Server never sees plaintext
+- **Secure Key Storage**: IndexedDB on client, private keys never leave device
 
-✅ **Allowed Technologies**:
-- Browser's Web Crypto API (for client-side)
-- Node's crypto module for backend digital signatures only
-- Raw JavaScript implementations
+## 📋 Requirements
 
-## Installation
+### Backend
+- Node.js 18+ 
+- MongoDB (optional, for metadata storage)
 
+### Frontend
+- Modern browser with Web Crypto API support
+- React 18+
+
+## 🚀 Setup Instructions
+
+### Backend Setup
+
+1. Install dependencies:
 ```bash
 npm install
 ```
 
-## Running the Server
-
+2. Set environment variables (optional):
 ```bash
-npm start
-# or for development
+export MONGODB_URI=mongodb://localhost:27017
+export DB_NAME=securelink_e2ee
+export PORT=3000
+```
+
+3. Start the server:
+```bash
+node src/app.js
+```
+
+The server will run on `http://localhost:3000`
+
+### Frontend Setup
+
+1. Navigate to client directory:
+```bash
+cd client
+npm install
+```
+
+2. Start development server:
+```bash
 npm run dev
 ```
 
-Server runs on `https://localhost:3000`
+The client will run on `http://localhost:5173`
 
-## API Endpoints
+## 📁 Project Structure
 
-### User Registration
-```bash
-POST /api/e2ee/register
-Body: { userId, publicKey }
+```
+securelink/
+├── src/                    # Backend (Node.js/Express)
+│   ├── auth/              # User authentication
+│   │   ├── auth.js        # Password hashing & user management
+│   │   └── routes.js      # Auth API routes
+│   ├── e2ee/              # E2EE core modules
+│   │   ├── api.js         # E2EE API routes
+│   │   ├── crypto.js      # AES-GCM encryption (pure JS)
+│   │   ├── keyExchange.js # Key exchange protocol
+│   │   ├── message.js     # Message encryption/decryption
+│   │   └── fileHandler.js # File encryption
+│   ├── attacks/           # Attack simulators
+│   │   ├── mitm.js        # MITM attack demo
+│   │   └── replay.js      # Replay attack demo
+│   ├── security/          # Security logging & analysis
+│   │   ├── logging.js     # Security event logging
+│   │   └── threatModel.js # STRIDE threat modeling
+│   ├── db/                # Database integration
+│   │   └── mongodb.js     # MongoDB operations
+│   └── app.js             # Express server
+├── client/                # Frontend (React)
+│   ├── src/
+│   │   ├── components/    # React components
+│   │   │   ├── Login.jsx  # Login/Register UI
+│   │   │   └── Chat.jsx   # Chat interface
+│   │   ├── crypto/        # Web Crypto API wrapper
+│   │   │   └── webCrypto.js
+│   │   ├── storage/       # Client-side key storage
+│   │   │   └── keyStorage.js
+│   │   └── e2ee/          # Client-side E2EE
+│   │       └── messageClient.js
+└── README.md
 ```
 
-### Key Exchange
-```bash
-POST /api/e2ee/key-exchange/initiate
-Body: { senderId, receiverId }
+## 🔑 Key Exchange Protocol
 
-POST /api/e2ee/key-exchange/complete
-Body: { senderId, receiverId, ephemeralPublicKey }
+### Protocol Flow
+
+1. **Registration**: Users register with public keys
+2. **Key Exchange Initiation**: 
+   - Sender generates ephemeral key pair
+   - Computes shared secret using ECDH
+   - Signs key exchange message
+3. **Key Exchange Completion**:
+   - Receiver verifies signature
+   - Computes shared secret
+   - Derives session key using HKDF
+4. **Key Confirmation**:
+   - Both parties exchange confirmation messages
+   - Verify session establishment
+
+### Security Properties
+
+- **Authenticity**: Digital signatures prevent MITM
+- **Forward Secrecy**: Ephemeral keys ensure PFS
+- **Key Confirmation**: Final step ensures mutual authentication
+
+## 🛡️ Threat Model (STRIDE)
+
+### Identified Threats
+
+1. **Man-in-the-Middle (MITM)**: Mitigated by digital signatures
+2. **Replay Attacks**: Mitigated by nonces, timestamps, sequence numbers
+3. **Eavesdropping**: Mitigated by E2EE encryption
+4. **Key Compromise**: Mitigated by key rotation and PFS
+5. **Denial of Service**: Partially mitigated by rate limiting
+6. **Unauthorized Access**: Mitigated by authentication
+
+**Security Score: 91.67% (Grade A)**
+
+## 🧪 Testing
+
+### Run Critical Tests
+
+```bash
+# Test core crypto functions
+node -e "import('./src/e2ee/crypto.js').then(m => { const iv = m.generateIV(); console.log('IV:', iv.length); })"
+
+# Test message encryption
+node -e "import('./src/e2ee/message.js').then(m => { const key = new Uint8Array(32).fill(1); const enc = m.encryptMessage('test', key, 'alice', 'bob'); console.log('Encrypted:', enc.encryptedPayload.length > 0); })"
+
+# Test replay protection
+node -e "import('./src/e2ee/message.js').then(m => { const tracker = new Set(); const key = new Uint8Array(32).fill(1); const msg = m.encryptMessage('test', key, 'alice', 'bob'); m.verifyMessage(msg, tracker); try { m.verifyMessage(msg, tracker); } catch(e) { console.log('Replay rejected:', e.message); } })"
 ```
 
-### Messaging
-```bash
-POST /api/e2ee/message/send
-Body: { senderId, receiverId, message }
+### API Testing
 
-POST /api/e2ee/message/receive
-Body: { receiverId, encryptedMessage }
+```bash
+# Health check
+curl http://localhost:3000/health
+
+# Register user
+curl -X POST http://localhost:3000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"testuser","password":"testpass123"}'
+
+# Login
+curl -X POST http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"testuser","password":"testpass123"}'
+
+# E2EE Registration
+curl -X POST http://localhost:3000/api/e2ee/register \
+  -H "Content-Type: application/json" \
+  -d '{"userId":"alice","publicKey":[1,2,3]}'
 ```
 
-### File Sharing
-```bash
-POST /api/e2ee/file/upload
-Body: { senderId, receiverId, fileName, fileData }
+## 📊 Attack Demonstrations
 
-POST /api/e2ee/file/download
-Body: { receiverId, encryptedFile }
-```
+### MITM Attack
+
+Located in `src/attacks/mitm.js`:
+- Demonstrates how MITM breaks DH without signatures
+- Shows how digital signatures prevent MITM
+- Includes logs and evidence
+
+### Replay Attack
+
+Located in `src/attacks/replay.js`:
+- Demonstrates replay attack attempt
+- Shows detection and prevention mechanisms
+- Includes sequence number validation
+
+## 📝 API Endpoints
+
+### Authentication
+- `POST /api/auth/register` - Register new user
+- `POST /api/auth/login` - Login user
+- `GET /api/auth/user/:username` - Get user info
+
+### E2EE
+- `POST /api/e2ee/register` - Register E2EE user
+- `POST /api/e2ee/key-exchange/initiate` - Initiate key exchange
+- `POST /api/e2ee/key-exchange/complete` - Complete key exchange
+- `POST /api/e2ee/key-exchange/confirm` - Confirm key exchange
+- `POST /api/e2ee/message/send` - Send encrypted message
+- `POST /api/e2ee/message/receive` - Receive encrypted message
+- `POST /api/e2ee/file/upload` - Upload encrypted file
+- `POST /api/e2ee/file/download` - Download encrypted file
 
 ### Security
-```bash
-GET /api/security/info
-Returns: Security report with threat analysis
-```
+- `GET /api/security/info` - Get security report
+- `GET /health` - Health check
 
-## Architecture
+## 🔒 Cryptographic Implementation
 
-```
-src/
-├── e2ee/
-│   ├── crypto.js          # AES-GCM encryption (pure JS)
-│   ├── keyExchange.js     # ECDH/RSA key exchange (pure JS)
-│   ├── message.js         # Message encryption/decryption
-│   ├── fileHandler.js     # File encryption/decryption
-│   └── api.js             # Express API routes
-├── attacks/
-│   ├── mitm.js            # MITM attack simulator
-│   └── replay.js          # Replay attack simulator
-├── security/
-│   ├── logging.js         # Security event logging
-│   └── threatModel.js     # Threat modeling and analysis
-└── app.js                 # Main Express application
-```
+### Allowed Technologies
+- **Web Crypto API** (client-side)
+- **Node.js crypto** (backend digital signatures only)
+- **Pure JavaScript** implementations
 
-## Security Features
+### Forbidden Technologies
+- Third-party E2EE libraries
+- Pre-built cryptography wrappers
+- CryptoJS for RSA/ECC
+- NodeForge
 
-### 1. End-to-End Encryption
-- Messages encrypted with AES-256-GCM
-- Server cannot decrypt user content
-- Keys never transmitted in plaintext
+## 📈 Security Logging
 
-### 2. Key Exchange Protocol
-- ECDH for ephemeral key exchange
-- HKDF for key derivation
-- Perfect forward secrecy
+All security events are logged:
+- Authentication attempts
+- Key exchange attempts
+- Failed message decryptions
+- Detected replay attacks
+- Invalid signatures
+- Server-side metadata access
 
-### 3. Attack Prevention
-- **MITM**: Certificate pinning, public key verification
-- **Replay**: Nonce tracking, timestamp validation
-- **Eavesdropping**: E2EE encryption
+## 🎓 Project Deliverables
 
-### 4. Security Logging
-- All security events logged
-- Attack detection logged
-- Audit trail maintained
+1. **Full Project Report (PDF)**
+   - Introduction & problem statement
+   - Threat model (STRIDE)
+   - Cryptographic design
+   - Key exchange protocol diagrams
+   - Attack demonstrations
+   - Architecture diagrams
+   - Evaluation and conclusion
 
-## Testing Attack Scenarios
+2. **Working Application**
+   - Functional E2EE messaging
+   - Encrypted file sharing
+   - Replay/disconnect handling
+   - Error handling
+   - Client-side only decryption
 
-### MITM Attack Simulation
-```javascript
-import { simulateMITMAttack } from './src/attacks/mitm.js';
+3. **Video Demonstration (10-15 min)**
+   - Protocol explanation
+   - Working demo
+   - MITM attack demo
+   - Replay attack demo
+   - Limitations discussion
 
-const result = simulateMITMAttack(legitimateKey, attackerKey);
-// Shows how certificate pinning prevents MITM
-```
+4. **GitHub Repository**
+   - Source code (client + server)
+   - README with setup instructions
+   - Documentation
+   - Screenshots of Wireshark/BurpSuite tests
 
-### Replay Attack Simulation
-```javascript
-import { simulateReplayAttack } from './src/attacks/replay.js';
+## 👥 Team Contribution
 
-const result = simulateReplayAttack(message, nonceTracker);
-// Shows how nonce tracking prevents replay
-```
+This project requires equal code contribution from all team members. Use Git commits to track contributions.
 
-## Security Analysis
+## 📄 License
 
-```javascript
-import { generateSecurityReport } from './src/security/threatModel.js';
+This project is for educational purposes only.
 
-const report = generateSecurityReport();
-console.log(report);
-// Returns security score, threat analysis, and recommendations
-```
+## 🙏 Acknowledgments
 
-## Project Status
-
-✅ Core E2EE functionality implemented
-✅ Key exchange protocol implemented
-✅ Message encryption/decryption working
-✅ File sharing encryption working
-✅ Attack simulators created
-✅ Security logging implemented
-✅ Threat modeling completed
-
-## Notes
-
-- Some cryptographic functions are simplified implementations
-- Full production implementation would require complete AES-GCM, ECDH, and RSA implementations in pure JavaScript
-- Current implementation demonstrates the architecture and security principles
-- For production, consider implementing full cryptographic algorithms or using Web Crypto API on client-side
-
-## License
-
-Apache-2.0
+- Web Crypto API documentation
+- STRIDE threat modeling framework
+- E2EE best practices

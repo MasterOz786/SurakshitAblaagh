@@ -1,11 +1,53 @@
+# Dependencies
 node_modules/
+client/node_modules/
+
+# Build outputs
 dist/
+build/
 *.log
+
+# Environment variables
 .env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
 .DS_Store
-*.pem
-*.key
-*.crt
+Thumbs.db
+
+# Python (if any)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+
+# Testing
 coverage/
 .nyc_output/
 
+# MongoDB
+data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Compiled code
+*.class
+*.o
+*.so
+
+# Package files
+*.tgz
+*.tar.gz
