@@ -7,6 +7,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { createE2EERoutes } from './e2ee/api.js';
+import { connectDB } from './db/mongodb.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,10 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Authentication routes
+import { createAuthRoutes } from './auth/routes.js';
+app.use('/api/auth', createAuthRoutes());
+
 // E2EE API routes
 app.use('/api/e2ee', createE2EERoutes());
 
@@ -34,13 +39,20 @@ app.get('/api/security/info', async (req, res) => {
 
 // Start server
 if (import.meta.url === `file://${process.argv[1]}`) {
-  // Start HTTP server (for demo - in production use HTTPS with proper certificates)
-  app.listen(PORT, () => {
-    console.log(`\n🚀 E2EE Messaging Server running on http://localhost:${PORT}`);
-    console.log(`📡 Health check: http://localhost:${PORT}/health`);
-    console.log(`🔐 E2EE API: http://localhost:${PORT}/api/e2ee`);
-    console.log(`🛡️  Security info: http://localhost:${PORT}/api/security/info`);
-    console.log(`\n⚠️  Note: Running in HTTP mode for demo. In production, use HTTPS with proper certificates.\n`);
+  // Connect to MongoDB
+  connectDB().then(() => {
+    // Start HTTP server (for demo - in production use HTTPS with proper certificates)
+    app.listen(PORT, () => {
+      console.log(`\n🚀 E2EE Messaging Server running on http://localhost:${PORT}`);
+      console.log(`📡 Health check: http://localhost:${PORT}/health`);
+      console.log(`🔐 Authentication: http://localhost:${PORT}/api/auth`);
+      console.log(`🔐 E2EE API: http://localhost:${PORT}/api/e2ee`);
+      console.log(`🛡️  Security info: http://localhost:${PORT}/api/security/info`);
+      console.log(`\n⚠️  Note: Running in HTTP mode for demo. In production, use HTTPS with proper certificates.\n`);
+    });
+  }).catch(error => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
   });
 }
 

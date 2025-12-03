@@ -5,8 +5,17 @@
 import express from 'express';
 import { encryptMessage, decryptMessage, verifyMessage } from './message.js';
 import { encryptFile, decryptFile } from './fileHandler.js';
-import { initiateKeyExchange, completeKeyExchange, deriveSessionKey } from './keyExchange.js';
+import { 
+  initiateKeyExchange, 
+  completeKeyExchange, 
+  deriveSessionKey,
+  generateKeyConfirmation,
+  verifyKeyConfirmation,
+  generateECDHKeyPair
+} from './keyExchange.js';
 import { generateSalt } from './crypto.js';
+import { storeMessageMetadata, storeFileMetadata, storeSessionMetadata } from '../db/mongodb.js';
+import { logSecurityEvent, SecurityEventType } from '../security/logging.js';
 
 // In-memory storage (in production, use database)
 const userSessions = new Map(); // userId -> { sessionKey, publicKey, nonceTracker }
@@ -51,7 +60,12 @@ export function createE2EERoutes() {
     }
 
     // Initiate key exchange
-    const keyExchange = initiateKeyExchange(receiver.publicKey);
+    // Generate a temporary private key for the sender (in production, use actual stored key)
+    const senderKeyPair = generateECDHKeyPair();
+    const keyExchange = initiateKeyExchange(
+      receiver.publicKey,
+      senderKeyPair.privateKey
+    );
     
     // Store pending exchange
     pendingKeyExchanges.set(senderId, {
@@ -67,9 +81,9 @@ export function createE2EERoutes() {
     });
   });
 
-  // Complete key exchange
+  // Complete key exchange with signature verification
   router.post('/key-exchange/complete', (req, res) => {
-    const { senderId, receiverId, ephemeralPublicKey } = req.body;
+    const { senderId, receiverId, ephemeralPublicKey, keyExchangeMessage, signature } = req.body;
 
     if (!senderId || !receiverId || !ephemeralPublicKey) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -80,40 +94,111 @@ export function createE2EERoutes() {
       return res.status(404).json({ error: 'Sender not found' });
     }
 
-    // Complete key exchange
-    const sharedSecret = completeKeyExchange(
-      new Uint8Array(ephemeralPublicKey),
-      sender.publicKey // Using as private key for demo (in production, use actual private key)
-    );
+    try {
+      // Complete key exchange with signature verification
+      const sharedSecret = completeKeyExchange(
+        new Uint8Array(ephemeralPublicKey),
+        sender.publicKey, // Would be actual private key in production
+        sender.publicKey, // Public key for verification
+        keyExchangeMessage,
+        signature ? new Uint8Array(signature) : null
+      );
 
-    // Derive session key
-    const salt = generateSalt();
-    const sessionKey = deriveSessionKey(
-      sharedSecret,
-      salt,
-      `${senderId}-${receiverId}`
-    );
+      // Derive session key
+      const salt = generateSalt();
+      const sessionKey = deriveSessionKey(
+        sharedSecret,
+        salt,
+        `${senderId}-${receiverId}`
+      );
 
-    // Store session key for both users
-    if (!userSessions.has(senderId)) {
-      userSessions.set(senderId, { nonceTracker: new Set() });
+      // Generate key confirmation
+      const sessionId = `${senderId}-${receiverId}-${Date.now()}`;
+      const keyConfirmation = generateKeyConfirmation(sharedSecret, sessionId);
+
+      // Store session key for both users
+      if (!userSessions.has(senderId)) {
+        userSessions.set(senderId, { nonceTracker: new Set() });
+      }
+      if (!userSessions.has(receiverId)) {
+        userSessions.set(receiverId, { nonceTracker: new Set() });
+      }
+
+      userSessions.get(senderId).sessionKey = Array.from(sessionKey);
+      userSessions.get(receiverId).sessionKey = Array.from(sessionKey);
+
+      // Store session metadata in MongoDB
+      storeSessionMetadata({
+        sessionId: sessionId,
+        userId: senderId,
+        peerUserId: receiverId,
+        sessionEstablishedAt: new Date()
+      });
+
+      logSecurityEvent(SecurityEventType.KEY_EXCHANGE, {
+        senderId,
+        receiverId,
+        success: true
+      });
+
+      res.json({
+        success: true,
+        message: 'Key exchange completed',
+        sessionEstablished: true,
+        keyConfirmation: keyConfirmation
+      });
+    } catch (error) {
+      logSecurityEvent(SecurityEventType.ATTACK_DETECTED, {
+        attackType: 'MITM',
+        details: error.message,
+        senderId,
+        receiverId
+      });
+
+      res.status(400).json({
+        error: 'Key exchange failed',
+        details: error.message
+      });
     }
-    if (!userSessions.has(receiverId)) {
-      userSessions.set(receiverId, { nonceTracker: new Set() });
+  });
+
+  // Verify key confirmation (final step)
+  router.post('/key-exchange/confirm', (req, res) => {
+    const { senderId, receiverId, sessionId, confirmation, timestamp } = req.body;
+
+    if (!senderId || !receiverId || !sessionId || !confirmation) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    userSessions.get(senderId).sessionKey = Array.from(sessionKey);
-    userSessions.get(receiverId).sessionKey = Array.from(sessionKey);
+    const user = userSessions.get(receiverId);
+    if (!user || !user.sessionKey) {
+      return res.status(400).json({ error: 'Session not established' });
+    }
 
-    res.json({
-      success: true,
-      message: 'Key exchange completed',
-      sessionEstablished: true
-    });
+    try {
+      // Verify key confirmation
+      const sharedSecret = new Uint8Array(32); // Would be actual shared secret
+      verifyKeyConfirmation(
+        sharedSecret,
+        sessionId,
+        new Uint8Array(confirmation),
+        timestamp
+      );
+
+      res.json({
+        success: true,
+        message: 'Key confirmation verified'
+      });
+    } catch (error) {
+      res.status(400).json({
+        error: 'Key confirmation failed',
+        details: error.message
+      });
+    }
   });
 
   // Send encrypted message
-  router.post('/message/send', (req, res) => {
+  router.post('/message/send', async (req, res) => {
     const { senderId, receiverId, message } = req.body;
 
     if (!senderId || !receiverId || !message) {
@@ -134,9 +219,29 @@ export function createE2EERoutes() {
       receiverId
     );
 
+    // Store message metadata in MongoDB (NO plaintext)
+    const messageId = `${senderId}-${receiverId}-${Date.now()}`;
+    await storeMessageMetadata({
+      messageId: messageId,
+      senderId: senderId,
+      receiverId: receiverId,
+      timestamp: encrypted.timestamp,
+      sequenceNumber: encrypted.sequenceNumber,
+      encryptedPayload: encrypted.encryptedPayload,
+      iv: encrypted.iv,
+      authTag: encrypted.authTag
+    });
+
+    logSecurityEvent(SecurityEventType.MESSAGE_SENT, {
+      senderId,
+      receiverId,
+      messageId: messageId
+    });
+
     res.json({
       success: true,
-      encryptedMessage: encrypted
+      encryptedMessage: encrypted,
+      messageId: messageId
     });
   });
 
@@ -161,11 +266,23 @@ export function createE2EERoutes() {
       const sessionKey = new Uint8Array(receiver.sessionKey);
       const decrypted = decryptMessage(encryptedMessage, sessionKey);
 
+      logSecurityEvent(SecurityEventType.MESSAGE_RECEIVED, {
+        senderId: decrypted.senderId,
+        receiverId: receiverId,
+        messageId: encryptedMessage.messageId
+      });
+
       res.json({
         success: true,
         message: decrypted
       });
     } catch (error) {
+      logSecurityEvent(SecurityEventType.REPLAY_DETECTED, {
+        receiverId: receiverId,
+        error: error.message,
+        timestamp: Date.now()
+      });
+
       res.status(400).json({
         error: 'Message verification or decryption failed',
         details: error.message
