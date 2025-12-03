@@ -5,7 +5,7 @@
  */
 
 // IndexedDB database name
-const DB_NAME = 'SecureLinkE2EE';
+const DB_NAME = 'SurakshitAblaaghE2EE';
 const DB_VERSION = 1;
 const STORE_NAME = 'keys';
 

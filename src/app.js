@@ -43,7 +43,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   connectDB().then(() => {
     // Start HTTP server (for demo - in production use HTTPS with proper certificates)
     app.listen(PORT, () => {
-      console.log(`\n🚀 E2EE Messaging Server running on http://localhost:${PORT}`);
+      console.log(`\n🚀 SurakshitAblaagh E2EE Messaging Server running on http://localhost:${PORT}`);
       console.log(`📡 Health check: http://localhost:${PORT}/health`);
       console.log(`🔐 Authentication: http://localhost:${PORT}/api/auth`);
       console.log(`🔐 E2EE API: http://localhost:${PORT}/api/e2ee`);

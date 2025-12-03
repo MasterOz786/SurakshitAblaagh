@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
 import Chat from './components/Chat';
 import { initKeyStorage } from './storage/keyStorage.js';
-import { generateECKeyPair } from './crypto/webCrypto.js';
 
 function App() {
   const [user, setUser] = useState(null);
@@ -19,19 +18,9 @@ function App() {
     });
   }, []);
 
-  const handleLogin = async (username) => {
-    // Generate key pair on login
-    const keys = await generateECKeyPair('P-256');
+  const handleLogin = async (username, keys) => {
     setKeyPair(keys);
     setUser({ username });
-    
-    // Store keys in IndexedDB
-    const { storeKeyPair } = await import('./storage/keyStorage.js');
-    await storeKeyPair(username, {
-      privateKey: keys.privateKey,
-      publicKey: keys.publicKey,
-      type: 'EC'
-    });
   };
 
   const handleLogout = async () => {
@@ -42,7 +31,7 @@ function App() {
   };
 
   if (loading) {
-    return <div>Loading...</div>;
+    return <div className="loading">Initializing secure storage...</div>;
   }
 
   return (
@@ -57,4 +46,3 @@ function App() {
 }
 
 export default App;
-

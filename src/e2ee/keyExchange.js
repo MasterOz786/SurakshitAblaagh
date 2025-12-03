@@ -85,9 +85,31 @@ export function signData(data, privateKey) {
 
 // Digital signature verification
 export function verifySignature(data, signature, publicKey) {
-  // In production, implement proper signature verification
-  // This is a placeholder
-  const expectedSignature = signData(data, publicKey); // Using public key as placeholder
+  // In production, implement proper signature verification (ECDSA/RSA)
+  // This is a simplified implementation for demonstration
+  // 
+  // In a real system:
+  // - Signatures are created with private key
+  // - Verification uses public key (cannot derive private key)
+  // - Uses proper cryptographic algorithms (ECDSA, RSA-PSS, etc.)
+  //
+  // For this simplified demo, we simulate by:
+  // - Treating public key as if it can verify signatures created with private key
+  // - In reality, this requires proper key pair relationship
+  
+  // Simplified: For demo purposes, we can verify by recreating signature
+  // with public key (this is NOT how real crypto works, but demonstrates the concept)
+  const dataBytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  const keyBytes = publicKey instanceof Uint8Array ? publicKey : new Uint8Array(publicKey);
+  
+  // In real crypto, you can't create a signature with public key
+  // But for this simplified demo, we simulate verification
+  const combined = new Uint8Array(dataBytes.length + keyBytes.length);
+  combined.set(dataBytes, 0);
+  combined.set(keyBytes, dataBytes.length);
+  
+  // Generate expected signature (simplified - matches signData logic)
+  const expectedSignature = simpleHash(combined);
   
   return constantTimeEquals(signature, expectedSignature);
 }

@@ -1,4 +1,4 @@
-# SecureLink - End-to-End Encrypted Messaging System
+# SurakshitAblaagh - End-to-End Encrypted Messaging System
 
 A secure communication system providing end-to-end encryption (E2EE) for text messaging and file sharing, ensuring that messages and files never exist in plaintext outside the sender or receiver device.
 

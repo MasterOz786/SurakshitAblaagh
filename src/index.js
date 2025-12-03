@@ -1,5 +1,5 @@
 /**
- * Securelink - Main entry point
+ * SurakshitAblaagh - Main entry point
  */
 
 export * from './keys.js';

@@ -1,5 +1,5 @@
 /**
- * Constants and default values for the securelink package.
+ * Constants and default values for the SurakshitAblaagh package.
  */
 
 import { KeyType, KeyLength } from './keys.js';

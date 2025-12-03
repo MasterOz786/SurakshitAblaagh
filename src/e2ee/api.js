@@ -15,7 +15,13 @@ import {
 } from './keyExchange.js';
 import { generateSalt } from './crypto.js';
 import { storeMessageMetadata, storeFileMetadata, storeSessionMetadata } from '../db/mongodb.js';
-import { logSecurityEvent, SecurityEventType } from '../security/logging.js';
+import { 
+  logSecurityEvent, 
+  SecurityEventType,
+  logDecryptionFailure,
+  logInvalidSignature,
+  logMetadataAccess
+} from '../security/logging.js';
 
 // In-memory storage (in production, use database)
 const userSessions = new Map(); // userId -> { sessionKey, publicKey, nonceTracker }
@@ -148,12 +154,28 @@ export function createE2EERoutes() {
         keyConfirmation: keyConfirmation
       });
     } catch (error) {
-      logSecurityEvent(SecurityEventType.ATTACK_DETECTED, {
-        attackType: 'MITM',
-        details: error.message,
-        senderId,
-        receiverId
-      });
+      // Check if it's a signature verification failure
+      if (error.message.includes('signature') || error.message.includes('verification')) {
+        logInvalidSignature(senderId, 'key_exchange', {
+          receiverId,
+          error: error.message,
+          ephemeralPublicKey: Array.from(ephemeralPublicKey).slice(0, 10) // Log first 10 bytes only
+        });
+        
+        logSecurityEvent(SecurityEventType.KEY_EXCHANGE_FAILED, {
+          senderId,
+          receiverId,
+          reason: 'signature_verification_failed',
+          error: error.message
+        });
+      } else {
+        logSecurityEvent(SecurityEventType.ATTACK_DETECTED, {
+          attackType: 'MITM',
+          details: error.message,
+          senderId,
+          receiverId
+        });
+      }
 
       res.status(400).json({
         error: 'Key exchange failed',
@@ -231,6 +253,9 @@ export function createE2EERoutes() {
       iv: encrypted.iv,
       authTag: encrypted.authTag
     });
+    
+    // Log metadata access (server storing metadata)
+    logMetadataAccess('server', 'message_store', messageId);
 
     logSecurityEvent(SecurityEventType.MESSAGE_SENT, {
       senderId,
@@ -277,11 +302,21 @@ export function createE2EERoutes() {
         message: decrypted
       });
     } catch (error) {
-      logSecurityEvent(SecurityEventType.REPLAY_DETECTED, {
-        receiverId: receiverId,
-        error: error.message,
-        timestamp: Date.now()
-      });
+      // Check if it's a replay attack or decryption failure
+      if (error.message.includes('replay') || error.message.includes('nonce') || error.message.includes('sequence')) {
+        logSecurityEvent(SecurityEventType.REPLAY_DETECTED, {
+          receiverId: receiverId,
+          senderId: encryptedMessage.senderId,
+          error: error.message,
+          timestamp: Date.now()
+        });
+      } else if (error.message.includes('decrypt') || error.message.includes('authentication') || error.message.includes('tag')) {
+        // Log failed decryption
+        logDecryptionFailure(receiverId, encryptedMessage.senderId, error);
+      } else {
+        // Generic error - could be decryption failure
+        logDecryptionFailure(receiverId, encryptedMessage.senderId, error);
+      }
 
       res.status(400).json({
         error: 'Message verification or decryption failed',

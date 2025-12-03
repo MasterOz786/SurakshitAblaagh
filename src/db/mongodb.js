@@ -4,12 +4,13 @@
  */
 
 import { MongoClient } from 'mongodb';
+import { logMetadataAccess } from '../security/logging.js';
 
 let client = null;
 let db = null;
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
-const DB_NAME = process.env.DB_NAME || 'securelink_e2ee';
+const DB_NAME = process.env.DB_NAME || 'surakshitablaagh_e2ee';
 
 // Connect to MongoDB
 export async function connectDB() {
@@ -69,11 +70,16 @@ export async function getMessageMetadata(receiverId, limit = 50) {
     if (!db) return []; // MongoDB not available
     const collection = db.collection('messages');
   
-    return await collection
+    const results = await collection
       .find({ receiverId: receiverId })
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
+    
+    // Log metadata access
+    logMetadataAccess(receiverId, 'message_query', `receiver:${receiverId}`);
+    
+    return results;
   } catch (error) {
     console.warn('Failed to get message metadata:', error.message);
     return [];
@@ -112,7 +118,14 @@ export async function getFileMetadata(fileId) {
     if (!db) return null; // MongoDB not available
     const collection = db.collection('files');
     
-    return await collection.findOne({ fileId: fileId });
+    const result = await collection.findOne({ fileId: fileId });
+    
+    // Log metadata access
+    if (result) {
+      logMetadataAccess(result.receiverId || 'unknown', 'file_query', fileId);
+    }
+    
+    return result;
   } catch (error) {
     console.warn('Failed to get file metadata:', error.message);
     return null;
