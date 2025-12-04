@@ -46,8 +46,14 @@ app.get('/api/security/info', async (req, res) => {
 
 // Start server
 if (import.meta.url === `file://${process.argv[1]}`) {
-  // Connect to MongoDB
-  connectDB().then(() => {
+  // Connect to MongoDB (with retry logic)
+  connectDB().then((db) => {
+    if (db) {
+      console.log('✓ MongoDB connected - Data will be persisted');
+    } else {
+      console.log('⚠️  MongoDB not available - Using in-memory storage (data will be lost on restart)');
+    }
+    
     // Start HTTP server (for demo - in production use HTTPS with proper certificates)
     app.listen(PORT, () => {
       console.log(`\n🚀 SurakshitAblaagh E2EE Messaging Server running on http://localhost:${PORT}`);
@@ -56,6 +62,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.log(`🔐 E2EE API: http://localhost:${PORT}/api/e2ee`);
       console.log(`🛡️  Security info: http://localhost:${PORT}/api/security/info`);
       console.log(`\n⚠️  Note: Running in HTTP mode for demo. In production, use HTTPS with proper certificates.\n`);
+    });
+    
+    // Handle graceful shutdown
+    process.on('SIGINT', async () => {
+      console.log('\n\nShutting down gracefully...');
+      const { closeDB } = await import('./db/mongodb.js');
+      await closeDB();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', async () => {
+      console.log('\n\nShutting down gracefully...');
+      const { closeDB } = await import('./db/mongodb.js');
+      await closeDB();
+      process.exit(0);
     });
   }).catch(error => {
     console.error('Failed to start server:', error);

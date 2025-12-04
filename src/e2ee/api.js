@@ -22,28 +22,45 @@ import {
   logInvalidSignature,
   logMetadataAccess
 } from '../security/logging.js';
+import {
+  storeE2EEUserSession,
+  getE2EEUserSession,
+  updateE2EEUserSession,
+  storePendingKeyExchange,
+  getPendingKeyExchange,
+  deletePendingKeyExchange,
+  getDB
+} from '../db/mongodb.js';
 
-// In-memory storage (in production, use database)
-const userSessions = new Map(); // userId -> { sessionKey, publicKey, nonceTracker }
-const pendingKeyExchanges = new Map(); // userId -> { ephemeralPublicKey, timestamp }
+// In-memory fallback cache (MongoDB is source of truth)
+const userSessionsCache = new Map(); // userId -> { sessionKey, publicKey, nonceTracker }
+const pendingKeyExchangesCache = new Map(); // userId -> { ephemeralPublicKey, timestamp }
 
 export function createE2EERoutes() {
   const router = express.Router();
 
   // Register user and initiate key exchange
-  router.post('/register', (req, res) => {
+  router.post('/register', async (req, res) => {
     const { userId, publicKey } = req.body;
     
     if (!userId || !publicKey) {
       return res.status(400).json({ error: 'userId and publicKey required' });
     }
 
-    // Store user's public key
-    userSessions.set(userId, {
+    // Store user's public key in MongoDB
+    const db = getDB();
+    const sessionData = {
       publicKey: new Uint8Array(publicKey),
       sessionKey: null,
       nonceTracker: new Set()
-    });
+    };
+    
+    if (db) {
+      await storeE2EEUserSession(userId, sessionData);
+    } else {
+      // Fallback to in-memory
+      userSessionsCache.set(userId, sessionData);
+    }
 
     res.json({ 
       success: true, 
@@ -53,14 +70,26 @@ export function createE2EERoutes() {
   });
 
   // Initiate key exchange
-  router.post('/key-exchange/initiate', (req, res) => {
+  router.post('/key-exchange/initiate', async (req, res) => {
     const { senderId, receiverId } = req.body;
 
     if (!senderId || !receiverId) {
       return res.status(400).json({ error: 'senderId and receiverId required' });
     }
 
-    const receiver = userSessions.get(receiverId);
+    // Get receiver from MongoDB or cache
+    const db = getDB();
+    let receiver = null;
+    
+    if (db) {
+      receiver = await getE2EEUserSession(receiverId);
+      if (receiver) {
+        userSessionsCache.set(receiverId, receiver);
+      }
+    } else {
+      receiver = userSessionsCache.get(receiverId);
+    }
+    
     if (!receiver) {
       return res.status(404).json({ error: 'Receiver not found' });
     }
@@ -73,13 +102,19 @@ export function createE2EERoutes() {
       senderKeyPair.privateKey
     );
     
-    // Store pending exchange
-    pendingKeyExchanges.set(senderId, {
+    // Store pending exchange in MongoDB
+    const exchangeData = {
       ephemeralPublicKey: Array.from(keyExchange.ephemeralPublicKey),
       sharedSecret: Array.from(keyExchange.sharedSecret),
       receiverId: receiverId,
       timestamp: Date.now()
-    });
+    };
+    
+    if (db) {
+      await storePendingKeyExchange(senderId, exchangeData);
+    } else {
+      pendingKeyExchangesCache.set(senderId, exchangeData);
+    }
 
     res.json({
       success: true,
@@ -88,14 +123,26 @@ export function createE2EERoutes() {
   });
 
   // Complete key exchange with signature verification
-  router.post('/key-exchange/complete', (req, res) => {
+  router.post('/key-exchange/complete', async (req, res) => {
     const { senderId, receiverId, ephemeralPublicKey, keyExchangeMessage, signature } = req.body;
 
     if (!senderId || !receiverId || !ephemeralPublicKey) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const sender = userSessions.get(senderId);
+    // Get sender from MongoDB or cache
+    const db = getDB();
+    let sender = null;
+    
+    if (db) {
+      sender = await getE2EEUserSession(senderId);
+      if (sender) {
+        userSessionsCache.set(senderId, sender);
+      }
+    } else {
+      sender = userSessionsCache.get(senderId);
+    }
+    
     if (!sender) {
       return res.status(404).json({ error: 'Sender not found' });
     }
@@ -122,16 +169,30 @@ export function createE2EERoutes() {
       const sessionId = `${senderId}-${receiverId}-${Date.now()}`;
       const keyConfirmation = generateKeyConfirmation(sharedSecret, sessionId);
 
-      // Store session key for both users
-      if (!userSessions.has(senderId)) {
-        userSessions.set(senderId, { nonceTracker: new Set() });
+      // Store session key for both users in MongoDB
+      const senderSession = {
+        sessionKey: sessionKey,
+        nonceTracker: sender.nonceTracker || new Set()
+      };
+      
+      const receiverSession = {
+        sessionKey: sessionKey,
+        nonceTracker: new Set()
+      };
+      
+      if (db) {
+        await updateE2EEUserSession(senderId, senderSession);
+        await updateE2EEUserSession(receiverId, receiverSession);
+      } else {
+        if (!userSessionsCache.has(senderId)) {
+          userSessionsCache.set(senderId, { nonceTracker: new Set() });
+        }
+        if (!userSessionsCache.has(receiverId)) {
+          userSessionsCache.set(receiverId, { nonceTracker: new Set() });
+        }
+        userSessionsCache.get(senderId).sessionKey = Array.from(sessionKey);
+        userSessionsCache.get(receiverId).sessionKey = Array.from(sessionKey);
       }
-      if (!userSessions.has(receiverId)) {
-        userSessions.set(receiverId, { nonceTracker: new Set() });
-      }
-
-      userSessions.get(senderId).sessionKey = Array.from(sessionKey);
-      userSessions.get(receiverId).sessionKey = Array.from(sessionKey);
 
       // Store session metadata in MongoDB
       storeSessionMetadata({
@@ -185,14 +246,26 @@ export function createE2EERoutes() {
   });
 
   // Verify key confirmation (final step)
-  router.post('/key-exchange/confirm', (req, res) => {
+  router.post('/key-exchange/confirm', async (req, res) => {
     const { senderId, receiverId, sessionId, confirmation, timestamp } = req.body;
 
     if (!senderId || !receiverId || !sessionId || !confirmation) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const user = userSessions.get(receiverId);
+    // Get user from MongoDB or cache
+    const db = getDB();
+    let user = null;
+    
+    if (db) {
+      user = await getE2EEUserSession(receiverId);
+      if (user) {
+        userSessionsCache.set(receiverId, user);
+      }
+    } else {
+      user = userSessionsCache.get(receiverId);
+    }
+    
     if (!user || !user.sessionKey) {
       return res.status(400).json({ error: 'Session not established' });
     }
@@ -227,7 +300,19 @@ export function createE2EERoutes() {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const sender = userSessions.get(senderId);
+    // Get sender from MongoDB or cache
+    const db = getDB();
+    let sender = null;
+    
+    if (db) {
+      sender = await getE2EEUserSession(senderId);
+      if (sender) {
+        userSessionsCache.set(senderId, sender);
+      }
+    } else {
+      sender = userSessionsCache.get(senderId);
+    }
+    
     if (!sender || !sender.sessionKey) {
       return res.status(400).json({ error: 'Session not established' });
     }
@@ -271,14 +356,26 @@ export function createE2EERoutes() {
   });
 
   // Receive and decrypt message
-  router.post('/message/receive', (req, res) => {
+  router.post('/message/receive', async (req, res) => {
     const { receiverId, encryptedMessage } = req.body;
 
     if (!receiverId || !encryptedMessage) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const receiver = userSessions.get(receiverId);
+    // Get receiver from MongoDB or cache
+    const db = getDB();
+    let receiver = null;
+    
+    if (db) {
+      receiver = await getE2EEUserSession(receiverId);
+      if (receiver) {
+        userSessionsCache.set(receiverId, receiver);
+      }
+    } else {
+      receiver = userSessionsCache.get(receiverId);
+    }
+    
     if (!receiver || !receiver.sessionKey) {
       return res.status(400).json({ error: 'Session not established' });
     }
@@ -290,6 +387,15 @@ export function createE2EERoutes() {
       // Decrypt message
       const sessionKey = new Uint8Array(receiver.sessionKey);
       const decrypted = decryptMessage(encryptedMessage, sessionKey);
+
+      // Update nonce tracker in MongoDB
+      if (db) {
+        await updateE2EEUserSession(receiverId, {
+          nonceTracker: receiver.nonceTracker
+        });
+      } else {
+        userSessionsCache.set(receiverId, receiver);
+      }
 
       logSecurityEvent(SecurityEventType.MESSAGE_RECEIVED, {
         senderId: decrypted.senderId,
@@ -326,14 +432,26 @@ export function createE2EERoutes() {
   });
 
   // Upload encrypted file
-  router.post('/file/upload', (req, res) => {
+  router.post('/file/upload', async (req, res) => {
     const { senderId, receiverId, fileName, fileData } = req.body;
 
     if (!senderId || !receiverId || !fileName || !fileData) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const sender = userSessions.get(senderId);
+    // Get sender from MongoDB or cache
+    const db = getDB();
+    let sender = null;
+    
+    if (db) {
+      sender = await getE2EEUserSession(senderId);
+      if (sender) {
+        userSessionsCache.set(senderId, sender);
+      }
+    } else {
+      sender = userSessionsCache.get(senderId);
+    }
+    
     if (!sender || !sender.sessionKey) {
       return res.status(400).json({ error: 'Session not established' });
     }
@@ -350,14 +468,26 @@ export function createE2EERoutes() {
   });
 
   // Download and decrypt file
-  router.post('/file/download', (req, res) => {
+  router.post('/file/download', async (req, res) => {
     const { receiverId, encryptedFile } = req.body;
 
     if (!receiverId || !encryptedFile) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const receiver = userSessions.get(receiverId);
+    // Get receiver from MongoDB or cache
+    const db = getDB();
+    let receiver = null;
+    
+    if (db) {
+      receiver = await getE2EEUserSession(receiverId);
+      if (receiver) {
+        userSessionsCache.set(receiverId, receiver);
+      }
+    } else {
+      receiver = userSessionsCache.get(receiverId);
+    }
+    
     if (!receiver || !receiver.sessionKey) {
       return res.status(400).json({ error: 'Session not established' });
     }

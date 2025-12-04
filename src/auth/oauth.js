@@ -5,6 +5,7 @@
 
 import { registerUser, getUser, userExists } from './auth.js';
 import { logSecurityEvent, SecurityEventType, logAuthenticationAttempt } from '../security/logging.js';
+import { updateUser } from './auth.js';
 
 // OAuth provider configurations
 const OAUTH_PROVIDERS = {
@@ -148,7 +149,7 @@ export async function authenticateWithOAuth(provider, userInfo) {
   const username = email.split('@')[0] + '_' + provider;
   
   // Check if user exists
-  let user = getUser(username);
+  let user = await getUser(username);
   
   if (!user) {
     // Register new user (no password needed for OAuth)
@@ -157,16 +158,16 @@ export async function authenticateWithOAuth(provider, userInfo) {
     
     try {
       await registerUser(username, randomPassword);
-      user = getUser(username);
       
-      // Mark user as OAuth user
-      if (user) {
-        user.oauthProvider = provider;
-        user.oauthId = userInfo.id;
-        user.email = email;
-        user.name = userInfo.name;
-        user.picture = userInfo.picture;
-      }
+      // Update user with OAuth info
+      await updateUser(username, {
+        oauthProvider: provider,
+        oauthId: userInfo.id,
+        email: email,
+        name: userInfo.name,
+        picture: userInfo.picture,
+        lastLogin: new Date()
+      });
       
       logSecurityEvent(SecurityEventType.SESSION_ESTABLISHED, {
         username: username,
@@ -174,15 +175,18 @@ export async function authenticateWithOAuth(provider, userInfo) {
         provider: provider
       });
     } catch (error) {
-      throw new Error('Failed to register OAuth user');
+      throw new Error('Failed to register OAuth user: ' + error.message);
     }
   } else {
     // Update OAuth info for existing user
-    user.oauthProvider = provider;
-    user.oauthId = userInfo.id;
-    user.email = email;
-    user.name = userInfo.name;
-    user.picture = userInfo.picture;
+    await updateUser(username, {
+      oauthProvider: provider,
+      oauthId: userInfo.id,
+      email: email,
+      name: userInfo.name,
+      picture: userInfo.picture,
+      lastLogin: new Date()
+    });
   }
   
   // Log successful authentication
