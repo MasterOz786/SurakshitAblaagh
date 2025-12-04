@@ -185,3 +185,109 @@ body {
   margin-left: 10px;
 }
 
+.file-upload button:hover {
+  background: #218838;
+}
+
+/* Logout button */
+.logout-button {
+  padding: 8px 16px;
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.logout-button:hover {
+  background-color: #c82333;
+}
+
+.logout-button:active {
+  background-color: #bd2130;
+}
+
+/* Recipient selector button */
+.recipient-selector button {
+  padding: 10px 20px;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.recipient-selector button:hover:not(:disabled) {
+  background: #0056b3;
+}
+
+.recipient-selector button:disabled {
+  background: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Login container toggle button */
+.login-container button[type="button"] {
+  background: #6c757d;
+  margin-top: 5px;
+}
+
+.login-container button[type="button"]:hover {
+  background: #5a6268;
+}
+
+.login-container button:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* OAuth button styling */
+.oauth-button {
+  width: 100%;
+  padding: 12px;
+  background: #fff;
+  color: #333;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: all 0.2s;
+  margin-top: 10px;
+}
+
+.oauth-button:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #ccc;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.oauth-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.oauth-divider {
+  margin: 20px 0;
+  padding-top: 20px;
+  border-top: 1px solid #ddd;
+  text-align: center;
+}
+
+.oauth-divider p {
+  margin-bottom: 15px;
+  color: #666;
+  font-size: 14px;
+}
+

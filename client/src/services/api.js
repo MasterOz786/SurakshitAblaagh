@@ -19,18 +19,66 @@ const api = axios.create({
 
 // Authentication
 export async function registerUser(username, password) {
-  const response = await api.post('/api/auth/register', {
-    username,
-    password // Will be hashed server-side
-  });
-  return response.data;
+  try {
+    const response = await api.post('/api/auth/register', {
+      username,
+      password // Will be hashed server-side
+    });
+    
+    // Check if response indicates failure
+    if (response.status >= 400 || response.data.error) {
+      throw new Error(response.data.error || 'Registration failed');
+    }
+    
+    return response.data;
+  } catch (error) {
+    // Handle axios errors
+    if (error.response) {
+      throw new Error(error.response.data?.error || 'Registration failed');
+    }
+    throw error;
+  }
 }
 
 export async function loginUser(username, password) {
-  const response = await api.post('/api/auth/login', {
-    username,
-    password // Will be hashed server-side
+  try {
+    const response = await api.post('/api/auth/login', {
+      username,
+      password // Will be hashed server-side
+    });
+    
+    // Check if response indicates failure
+    if (response.status >= 400 || response.data.error) {
+      throw new Error(response.data.error || 'Authentication failed');
+    }
+    
+    return response.data;
+  } catch (error) {
+    // Handle axios errors
+    if (error.response) {
+      throw new Error(error.response.data?.error || 'Authentication failed');
+    }
+    throw error;
+  }
+}
+
+// OAuth Authentication
+export async function getOAuthUrl(provider = 'google') {
+  // The redirect URI should point to the backend callback endpoint
+  // The backend will then redirect to the frontend
+  const backendUrl = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+  const redirectUri = `${backendUrl}/api/auth/oauth/${provider}/callback`;
+  
+  // Client ID from environment or use placeholder (backend will use env var if not provided)
+  const clientId = import.meta.env.VITE_OAUTH_GOOGLE_CLIENT_ID || '';
+  
+  const response = await api.get(`/api/auth/oauth/${provider}/authorize`, {
+    params: {
+      redirect_uri: redirectUri,
+      client_id: clientId || undefined // Only send if provided
+    }
   });
+  
   return response.data;
 }
 

@@ -166,7 +166,12 @@ function Chat({ user, keyPair, onLogout }) {
     <div className="chat-container">
       <div className="chat-header">
         <h2>Welcome, {user.username}</h2>
-        <button onClick={onLogout}>Logout</button>
+        <button 
+          onClick={onLogout}
+          className="logout-button"
+        >
+          Logout
+        </button>
       </div>
       
       <div className="recipient-selector">

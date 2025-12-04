@@ -28,6 +28,11 @@ export async function initKeyStorage() {
         const objectStore = db.createObjectStore(STORE_NAME, { keyPath: 'userId' });
         objectStore.createIndex('userId', 'userId', { unique: true });
       }
+      // Create sessionKeys store if it doesn't exist
+      if (!db.objectStoreNames.contains('sessionKeys')) {
+        const sessionStore = db.createObjectStore('sessionKeys', { keyPath: ['userId', 'peerUserId'] });
+        sessionStore.createIndex('userId-peerUserId', ['userId', 'peerUserId'], { unique: true });
+      }
     };
   });
 }
@@ -142,13 +147,33 @@ export async function clearKeyStorage() {
   }
 
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_NAME, 'sessionKeys'], 'readwrite');
-    
-    transaction.objectStore(STORE_NAME).clear();
-    transaction.objectStore('sessionKeys').clear();
+    try {
+      const stores = [STORE_NAME];
+      // Add sessionKeys store if it exists
+      if (db.objectStoreNames.contains('sessionKeys')) {
+        stores.push('sessionKeys');
+      }
+      
+      const transaction = db.transaction(stores, 'readwrite');
+      
+      // Clear all stores
+      stores.forEach(storeName => {
+        transaction.objectStore(storeName).clear();
+      });
 
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => {
+        console.log('Key storage cleared successfully');
+        resolve();
+      };
+      transaction.onerror = () => {
+        console.error('Error clearing key storage:', transaction.error);
+        reject(transaction.error);
+      };
+    } catch (error) {
+      console.error('Error in clearKeyStorage:', error);
+      // Even if there's an error, resolve to allow logout
+      resolve();
+    }
   });
 }
 
