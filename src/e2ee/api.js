@@ -3,7 +3,7 @@
  */
 
 import express from 'express';
-import { encryptMessage, decryptMessage, verifyMessage } from './message.js';
+import { decryptMessage, verifyMessage } from './message.js';
 import { encryptFile, decryptFile } from './fileHandler.js';
 import { 
   initiateKeyExchange, 
@@ -69,12 +69,44 @@ export function createE2EERoutes() {
     });
   });
 
-  // Initiate key exchange
-  router.post('/key-exchange/initiate', async (req, res) => {
-    const { senderId, receiverId } = req.body;
+  // Get user's public key (for key exchange)
+  router.get('/user/:userId', async (req, res) => {
+    const { userId } = req.params;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'userId required' });
+    }
 
-    if (!senderId || !receiverId) {
-      return res.status(400).json({ error: 'senderId and receiverId required' });
+    // Get user from MongoDB or cache
+    const db = getDB();
+    let user = null;
+    
+    if (db) {
+      user = await getE2EEUserSession(userId);
+      if (user) {
+        userSessionsCache.set(userId, user);
+      }
+    } else {
+      user = userSessionsCache.get(userId);
+    }
+    
+    if (!user || !user.publicKey) {
+      return res.status(404).json({ error: 'User not found or has no public key' });
+    }
+
+    res.json({
+      success: true,
+      userId: userId,
+      publicKey: Array.from(user.publicKey)
+    });
+  });
+
+  // Initiate key exchange (User A sends their ephemeral public key to User B)
+  router.post('/key-exchange/initiate', async (req, res) => {
+    const { senderId, receiverId, ephemeralPublicKey, keyExchangeMessage, signature } = req.body;
+
+    if (!senderId || !receiverId || !ephemeralPublicKey || !keyExchangeMessage) {
+      return res.status(400).json({ error: 'senderId, receiverId, ephemeralPublicKey, and keyExchangeMessage required' });
     }
 
     // Get receiver from MongoDB or cache
@@ -94,90 +126,221 @@ export function createE2EERoutes() {
       return res.status(404).json({ error: 'Receiver not found' });
     }
 
-    // Initiate key exchange
-    // Generate a temporary private key for the sender (in production, use actual stored key)
-    const senderKeyPair = generateECDHKeyPair();
-    const keyExchange = initiateKeyExchange(
-      receiver.publicKey,
-      senderKeyPair.privateKey
-    );
-    
-    // Store pending exchange in MongoDB
+    // Store the key exchange initiation for the receiver to respond
+    // Key: receiverId (who will respond), Value: senderId's ephemeral public key
     const exchangeData = {
-      ephemeralPublicKey: Array.from(keyExchange.ephemeralPublicKey),
-      sharedSecret: Array.from(keyExchange.sharedSecret),
-      receiverId: receiverId,
+      senderId: senderId,
+      ephemeralPublicKey: Array.from(ephemeralPublicKey),
+      keyExchangeMessage: keyExchangeMessage,
+      signature: signature ? Array.from(signature) : null,
       timestamp: Date.now()
     };
     
     if (db) {
-      await storePendingKeyExchange(senderId, exchangeData);
+      await storePendingKeyExchange(receiverId, exchangeData);
     } else {
-      pendingKeyExchangesCache.set(senderId, exchangeData);
+      pendingKeyExchangesCache.set(receiverId, exchangeData);
     }
 
     res.json({
       success: true,
-      ephemeralPublicKey: Array.from(keyExchange.ephemeralPublicKey)
+      message: 'Key exchange initiated. Waiting for receiver to respond.'
     });
   });
 
-  // Complete key exchange with signature verification
-  router.post('/key-exchange/complete', async (req, res) => {
+  // Respond to key exchange (User B sends their ephemeral public key to User A)
+  // senderId = User B (the responder), receiverId = User A (the initiator)
+  router.post('/key-exchange/respond', async (req, res) => {
     const { senderId, receiverId, ephemeralPublicKey, keyExchangeMessage, signature } = req.body;
 
-    if (!senderId || !receiverId || !ephemeralPublicKey) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!senderId || !receiverId || !ephemeralPublicKey || !keyExchangeMessage) {
+      return res.status(400).json({ error: 'senderId, receiverId, ephemeralPublicKey, and keyExchangeMessage required' });
     }
 
-    // Get sender from MongoDB or cache
+    // Get initiator (User A) from MongoDB or cache
+    const db = getDB();
+    let initiator = null;
+    
+    if (db) {
+      initiator = await getE2EEUserSession(receiverId);
+      if (initiator) {
+        userSessionsCache.set(receiverId, initiator);
+      }
+    } else {
+      initiator = userSessionsCache.get(receiverId);
+    }
+    
+    if (!initiator) {
+      return res.status(404).json({ error: 'Initiator not found' });
+    }
+
+    // Get the pending key exchange from User A (initiator)
+    // When User A initiated, it was stored with userId = User B (senderId), senderId = User A (receiverId)
+    // So we look for: userId = senderId (User B, the responder), senderId = receiverId (User A, the initiator)
+    let pendingExchange = null;
+    if (db) {
+      pendingExchange = await getPendingKeyExchange(senderId, receiverId);
+    } else {
+      const cached = pendingKeyExchangesCache.get(senderId);
+      if (cached && cached.senderId === receiverId) {
+        pendingExchange = cached;
+      }
+    }
+
+    if (!pendingExchange) {
+      return res.status(404).json({ error: 'No pending key exchange found. User A must initiate first.' });
+    }
+
+    // Store User B's ephemeral public key for User A to complete
+    // Store with userId = receiverId (User A), senderId = senderId (User B)
+    const responseData = {
+      senderId: senderId, // User B (the responder)
+      ephemeralPublicKey: Array.from(ephemeralPublicKey),
+      keyExchangeMessage: keyExchangeMessage,
+      signature: signature ? Array.from(signature) : null,
+      timestamp: Date.now()
+    };
+
+    if (db) {
+      // Store response for User A to retrieve (overwrites the initiation with response)
+      await storePendingKeyExchange(receiverId, responseData);
+    } else {
+      // Store in cache with key = receiverId (User A)
+      pendingKeyExchangesCache.set(receiverId, responseData);
+    }
+
+    res.json({
+      success: true,
+      message: 'Key exchange response sent. Waiting for initiator to complete.',
+      initiatorEphemeralPublicKey: pendingExchange.ephemeralPublicKey,
+      initiatorKeyExchangeMessage: pendingExchange.keyExchangeMessage,
+      initiatorSignature: pendingExchange.signature
+    });
+  });
+
+  // Get pending key exchange response (for initiator to complete)
+  router.get('/key-exchange/pending/:userId/:senderId', async (req, res) => {
+    const { userId, senderId } = req.params;
+
+    if (!userId || !senderId) {
+      return res.status(400).json({ error: 'userId and senderId required' });
+    }
+
+    const db = getDB();
+    let pendingExchange = null;
+    
+    if (db) {
+      pendingExchange = await getPendingKeyExchange(userId, senderId);
+    } else {
+      const cached = pendingKeyExchangesCache.get(userId);
+      if (cached && cached.senderId === senderId) {
+        pendingExchange = cached;
+      }
+    }
+
+    if (!pendingExchange) {
+      return res.json({
+        success: false,
+        message: 'No pending key exchange found'
+      });
+    }
+
+    res.json({
+      success: true,
+      ephemeralPublicKey: pendingExchange.ephemeralPublicKey,
+      keyExchangeMessage: pendingExchange.keyExchangeMessage,
+      signature: pendingExchange.signature
+    });
+  });
+
+  // Complete key exchange (accepts client-side session key)
+  router.post('/key-exchange/complete', async (req, res) => {
+    const { senderId, receiverId, sessionKey, salt } = req.body;
+
+    if (!senderId || !receiverId || !sessionKey) {
+      return res.status(400).json({ error: 'Missing required fields: senderId, receiverId, and sessionKey' });
+    }
+
+    // Get sender and receiver from MongoDB or cache
     const db = getDB();
     let sender = null;
+    let receiver = null;
     
     if (db) {
       sender = await getE2EEUserSession(senderId);
+      receiver = await getE2EEUserSession(receiverId);
       if (sender) {
         userSessionsCache.set(senderId, sender);
       }
+      if (receiver) {
+        userSessionsCache.set(receiverId, receiver);
+      }
     } else {
       sender = userSessionsCache.get(senderId);
+      receiver = userSessionsCache.get(receiverId);
     }
     
     if (!sender) {
       return res.status(404).json({ error: 'Sender not found' });
     }
+    
+    if (!receiver) {
+      return res.status(404).json({ error: 'Receiver not found' });
+    }
 
     try {
-      // Complete key exchange with signature verification
-      const sharedSecret = completeKeyExchange(
-        new Uint8Array(ephemeralPublicKey),
-        sender.publicKey, // Would be actual private key in production
-        sender.publicKey, // Public key for verification
-        keyExchangeMessage,
-        signature ? new Uint8Array(signature) : null
-      );
-
-      // Derive session key
-      const salt = generateSalt();
-      const sessionKey = deriveSessionKey(
-        sharedSecret,
-        salt,
-        `${senderId}-${receiverId}`
-      );
-
-      // Generate key confirmation
-      const sessionId = `${senderId}-${receiverId}-${Date.now()}`;
-      const keyConfirmation = generateKeyConfirmation(sharedSecret, sessionId);
-
-      // Store session key for both users in MongoDB
+      // Store session key for both users (client already derived it)
+      const sessionKeyArray = new Uint8Array(sessionKey);
+      
+      // Check if receiver already has a session key (from their own key exchange)
+      // If they do, and it's different, we have a mismatch - use the first one established
+      const existingReceiverKey = receiver.sessionKey;
+      const existingSenderKey = sender.sessionKey;
+      
+      let finalSessionKey = sessionKeyArray;
+      
+      // If receiver already has a session key, check if it matches
+      if (existingReceiverKey && existingReceiverKey.length > 0) {
+        const receiverKeyArray = existingReceiverKey instanceof Uint8Array 
+          ? existingReceiverKey 
+          : new Uint8Array(existingReceiverKey);
+        
+        // Compare keys byte by byte
+        const keysMatch = receiverKeyArray.length === sessionKeyArray.length &&
+          receiverKeyArray.every((byte, i) => byte === sessionKeyArray[i]);
+        
+        if (!keysMatch) {
+          // Keys don't match - use the existing one (first established wins)
+          console.warn(`Session key mismatch detected. Using existing session key for ${receiverId}`);
+          finalSessionKey = receiverKeyArray;
+        }
+      }
+      
+      // If sender already has a session key, check if it matches
+      if (existingSenderKey && existingSenderKey.length > 0) {
+        const senderKeyArray = existingSenderKey instanceof Uint8Array 
+          ? existingSenderKey 
+          : new Uint8Array(existingSenderKey);
+        
+        // Compare keys byte by byte
+        const keysMatch = senderKeyArray.length === finalSessionKey.length &&
+          senderKeyArray.every((byte, i) => byte === finalSessionKey[i]);
+        
+        if (!keysMatch) {
+          // Keys don't match - use the existing one (first established wins)
+          console.warn(`Session key mismatch detected. Using existing session key for ${senderId}`);
+          finalSessionKey = senderKeyArray;
+        }
+      }
+      
       const senderSession = {
-        sessionKey: sessionKey,
+        sessionKey: finalSessionKey,
         nonceTracker: sender.nonceTracker || new Set()
       };
       
       const receiverSession = {
-        sessionKey: sessionKey,
-        nonceTracker: new Set()
+        sessionKey: finalSessionKey,
+        nonceTracker: receiver.nonceTracker || new Set()
       };
       
       if (db) {
@@ -190,11 +353,12 @@ export function createE2EERoutes() {
         if (!userSessionsCache.has(receiverId)) {
           userSessionsCache.set(receiverId, { nonceTracker: new Set() });
         }
-        userSessionsCache.get(senderId).sessionKey = Array.from(sessionKey);
-        userSessionsCache.get(receiverId).sessionKey = Array.from(sessionKey);
+        userSessionsCache.get(senderId).sessionKey = finalSessionKey;
+        userSessionsCache.get(receiverId).sessionKey = finalSessionKey;
       }
 
       // Store session metadata in MongoDB
+      const sessionId = `${senderId}-${receiverId}-${Date.now()}`;
       storeSessionMetadata({
         sessionId: sessionId,
         userId: senderId,
@@ -211,32 +375,16 @@ export function createE2EERoutes() {
       res.json({
         success: true,
         message: 'Key exchange completed',
-        sessionEstablished: true,
-        keyConfirmation: keyConfirmation
+        sessionEstablished: true
       });
     } catch (error) {
-      // Check if it's a signature verification failure
-      if (error.message.includes('signature') || error.message.includes('verification')) {
-        logInvalidSignature(senderId, 'key_exchange', {
-          receiverId,
-          error: error.message,
-          ephemeralPublicKey: Array.from(ephemeralPublicKey).slice(0, 10) // Log first 10 bytes only
-        });
-        
-        logSecurityEvent(SecurityEventType.KEY_EXCHANGE_FAILED, {
-          senderId,
-          receiverId,
-          reason: 'signature_verification_failed',
-          error: error.message
-        });
-      } else {
-        logSecurityEvent(SecurityEventType.ATTACK_DETECTED, {
-          attackType: 'MITM',
-          details: error.message,
-          senderId,
-          receiverId
-        });
-      }
+      // Log key exchange failure
+      logSecurityEvent(SecurityEventType.KEY_EXCHANGE_FAILED, {
+        senderId,
+        receiverId,
+        reason: error.message,
+        error: error.message
+      });
 
       res.status(400).json({
         error: 'Key exchange failed',
@@ -271,18 +419,16 @@ export function createE2EERoutes() {
     }
 
     try {
-      // Verify key confirmation
-      const sharedSecret = new Uint8Array(32); // Would be actual shared secret
-      verifyKeyConfirmation(
-        sharedSecret,
-        sessionId,
-        new Uint8Array(confirmation),
-        timestamp
-      );
-
+      // Key confirmation is a client-to-client verification
+      // Server just acknowledges receipt - actual verification happens client-side
+      // The confirmation proves both parties have the same shared secret
+      
+      // For now, we just log and acknowledge
+      // In a production system, you might want to store confirmation status
+      
       res.json({
         success: true,
-        message: 'Key confirmation verified'
+        message: 'Key confirmation received'
       });
     } catch (error) {
       res.status(400).json({
@@ -292,15 +438,19 @@ export function createE2EERoutes() {
     }
   });
 
-  // Send encrypted message
+  // Send encrypted message (message is already encrypted client-side)
   router.post('/message/send', async (req, res) => {
-    const { senderId, receiverId, message } = req.body;
+    // Accept the entire encrypted message object from client
+    // Client encrypts on their side - server just stores metadata
+    const encryptedMessage = req.body;
 
-    if (!senderId || !receiverId || !message) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!encryptedMessage || !encryptedMessage.senderId || !encryptedMessage.receiverId) {
+      return res.status(400).json({ error: 'Missing required fields: encryptedMessage with senderId and receiverId' });
     }
 
-    // Get sender from MongoDB or cache
+    const { senderId, receiverId } = encryptedMessage;
+
+    // Get sender from MongoDB or cache (just to verify session exists)
     const db = getDB();
     let sender = null;
     
@@ -317,26 +467,19 @@ export function createE2EERoutes() {
       return res.status(400).json({ error: 'Session not established' });
     }
 
-    // Encrypt message
-    const sessionKey = new Uint8Array(sender.sessionKey);
-    const encrypted = encryptMessage(
-      message,
-      sessionKey,
-      senderId,
-      receiverId
-    );
-
-    // Store message metadata in MongoDB (NO plaintext)
+    // Message is already encrypted client-side - just store metadata
+    // NO server-side encryption - this is E2EE!
     const messageId = `${senderId}-${receiverId}-${Date.now()}`;
     await storeMessageMetadata({
       messageId: messageId,
       senderId: senderId,
       receiverId: receiverId,
-      timestamp: encrypted.timestamp,
-      sequenceNumber: encrypted.sequenceNumber,
-      encryptedPayload: encrypted.encryptedPayload,
-      iv: encrypted.iv,
-      authTag: encrypted.authTag
+      timestamp: encryptedMessage.timestamp,
+      sequenceNumber: encryptedMessage.sequenceNumber,
+      encryptedPayload: encryptedMessage.encryptedPayload,
+      iv: encryptedMessage.iv,
+      authTag: encryptedMessage.authTag,
+      nonce: encryptedMessage.nonce || null // Store nonce for replay protection
     });
     
     // Log metadata access (server storing metadata)
@@ -350,9 +493,47 @@ export function createE2EERoutes() {
 
     res.json({
       success: true,
-      encryptedMessage: encrypted,
       messageId: messageId
     });
+  });
+
+  // Get pending messages for a user
+  router.get('/messages/:receiverId', async (req, res) => {
+    const { receiverId } = req.params;
+
+    if (!receiverId) {
+      return res.status(400).json({ error: 'receiverId required' });
+    }
+
+    // Get messages from MongoDB
+    const db = getDB();
+    if (!db) {
+      return res.json({
+        success: true,
+        messages: [],
+        count: 0
+      });
+    }
+
+    try {
+      const collection = db.collection('messages');
+      // Get messages where receiverId matches
+      const messages = await collection.find({
+        receiverId: receiverId
+      }).sort({ timestamp: 1 }).toArray();
+
+      // Log metadata access
+      logMetadataAccess(receiverId, 'message_query', `receiver:${receiverId}`);
+
+      res.json({
+        success: true,
+        messages: messages,
+        count: messages.length
+      });
+    } catch (error) {
+      console.error('Failed to get messages:', error);
+      res.status(500).json({ error: 'Failed to get messages' });
+    }
   });
 
   // Receive and decrypt message

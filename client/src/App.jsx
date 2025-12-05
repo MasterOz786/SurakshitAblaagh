@@ -24,7 +24,10 @@ function App() {
         handleOAuthCallback(searchParams);
       } else if (success === 'false') {
         const error = searchParams.get('error');
-        console.error('OAuth error:', error);
+        const errorMessage = error || 'OAuth authentication was cancelled or failed';
+        console.error('OAuth error:', errorMessage);
+        // Show user-friendly error message
+        alert(errorMessage);
         // Clear URL params
         window.history.replaceState({}, document.title, window.location.pathname);
       }

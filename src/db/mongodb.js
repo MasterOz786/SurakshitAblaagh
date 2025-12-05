@@ -52,6 +52,7 @@ export async function storeMessageMetadata(messageMetadata) {
     encryptedPayload: messageMetadata.encryptedPayload,
     iv: messageMetadata.iv,
     authTag: messageMetadata.authTag,
+    nonce: messageMetadata.nonce || null, // Store nonce for replay protection
     createdAt: new Date()
   };
   
@@ -242,6 +243,39 @@ export async function userExistsInDB(username) {
   }
 }
 
+// Get all users from MongoDB (for recipient selection)
+export async function getAllUsers(excludeUsername = null) {
+  try {
+    const db = getDB();
+    if (!db) return []; // MongoDB not available
+    
+    const collection = db.collection('users');
+    const query = excludeUsername ? { username: { $ne: excludeUsername } } : {};
+    
+    const users = await collection.find(query, {
+      projection: { 
+        username: 1, 
+        email: 1, 
+        name: 1, 
+        createdAt: 1,
+        lastLogin: 1,
+        _id: 0 
+      }
+    }).toArray();
+    
+    return users.map(user => ({
+      username: user.username,
+      email: user.email || null,
+      name: user.name || null,
+      createdAt: user.createdAt,
+      lastLogin: user.lastLogin || null
+    }));
+  } catch (error) {
+    console.warn('Failed to get all users:', error.message);
+    return [];
+  }
+}
+
 // E2EE User Sessions Functions
 // Store E2EE user session
 export async function storeE2EEUserSession(userId, sessionData) {
@@ -335,17 +369,21 @@ export async function storePendingKeyExchange(userId, exchangeData) {
     if (!db) return null; // MongoDB not available
     const collection = db.collection('pending_key_exchanges');
     
+    // Use senderId as part of the key to allow multiple pending exchanges
+    const key = exchangeData.senderId ? `${userId}-${exchangeData.senderId}` : userId;
+    
     const doc = {
       userId: userId,
+      senderId: exchangeData.senderId || null,
       ephemeralPublicKey: Array.from(exchangeData.ephemeralPublicKey || []),
-      sharedSecret: exchangeData.sharedSecret ? Array.from(exchangeData.sharedSecret) : null,
-      receiverId: exchangeData.receiverId,
+      keyExchangeMessage: exchangeData.keyExchangeMessage || null,
+      signature: exchangeData.signature ? Array.from(exchangeData.signature) : null,
       timestamp: exchangeData.timestamp || Date.now(),
       createdAt: new Date()
     };
     
     await collection.updateOne(
-      { userId: userId },
+      { userId: userId, senderId: exchangeData.senderId || null },
       { $set: doc },
       { upsert: true }
     );
@@ -361,14 +399,17 @@ export async function storePendingKeyExchange(userId, exchangeData) {
   }
 }
 
-// Get pending key exchange
-export async function getPendingKeyExchange(userId) {
+// Get pending key exchange for a specific sender
+export async function getPendingKeyExchange(userId, senderId = null) {
   try {
     const db = getDB();
     if (!db) return null; // MongoDB not available
     const collection = db.collection('pending_key_exchanges');
-    
-    return await collection.findOne({ userId: userId });
+    const query = senderId 
+      ? { userId: userId, senderId: senderId }
+      : { userId: userId };
+    const doc = await collection.findOne(query, { sort: { timestamp: -1 } }); // Get most recent
+    return doc;
   } catch (error) {
     console.warn('Failed to get pending key exchange:', error.message);
     return null;
@@ -376,13 +417,15 @@ export async function getPendingKeyExchange(userId) {
 }
 
 // Delete pending key exchange
-export async function deletePendingKeyExchange(userId) {
+export async function deletePendingKeyExchange(userId, senderId = null) {
   try {
     const db = getDB();
     if (!db) return false; // MongoDB not available
     const collection = db.collection('pending_key_exchanges');
-    
-    const result = await collection.deleteOne({ userId: userId });
+    const query = senderId 
+      ? { userId: userId, senderId: senderId }
+      : { userId: userId };
+    const result = await collection.deleteOne(query);
     return result.deletedCount > 0;
   } catch (error) {
     console.warn('Failed to delete pending key exchange:', error.message);

@@ -204,6 +204,48 @@ export function generateSalt() {
   return crypto.getRandomValues(new Uint8Array(32));
 }
 
+// Generate deterministic salt from two ephemeral public keys (for bidirectional key exchange)
+export async function deriveSaltFromEphemeralKeys(ephemeralPublicKey1, ephemeralPublicKey2) {
+  // Sort keys lexicographically to ensure both parties get the same salt
+  const key1 = new Uint8Array(ephemeralPublicKey1);
+  const key2 = new Uint8Array(ephemeralPublicKey2);
+  
+  let first, second;
+  // Compare byte by byte
+  for (let i = 0; i < Math.min(key1.length, key2.length); i++) {
+    if (key1[i] < key2[i]) {
+      first = key1;
+      second = key2;
+      break;
+    } else if (key1[i] > key2[i]) {
+      first = key2;
+      second = key1;
+      break;
+    }
+  }
+  // If keys are equal (shouldn't happen), use key1 first
+  if (!first) {
+    first = key1;
+    second = key2;
+  }
+  
+  // Concatenate in sorted order
+  const combined = new Uint8Array(first.length + second.length);
+  combined.set(first, 0);
+  combined.set(second, first.length);
+  
+  // Hash to get deterministic salt
+  const hash = await crypto.subtle.digest('SHA-256', combined);
+  return new Uint8Array(hash);
+}
+
+// Generate canonical info string (sorted usernames for consistency)
+export function getCanonicalInfoString(userId1, userId2) {
+  // Sort usernames alphabetically to ensure both parties use the same info
+  const users = [userId1, userId2].sort();
+  return new TextEncoder().encode(`${users[0]}-${users[1]}-session`);
+}
+
 // Generate random nonce
 export function generateNonce() {
   return crypto.getRandomValues(new Uint8Array(16));

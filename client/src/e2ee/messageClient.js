@@ -5,8 +5,11 @@
 
 import { encryptAESGCM, decryptAESGCM, generateIV, generateNonce } from '../crypto/webCrypto.js';
 
-// Message sequence counter (client-side only)
+// Message sequence counter for SENT messages (client-side only)
 let messageCounters = new Map();
+
+// Last received sequence numbers for RECEIVED messages (separate tracking)
+let lastReceivedSequenceNumbers = new Map();
 
 function getMessageCounter(senderId, receiverId) {
   const key = `${senderId}-${receiverId}`;
@@ -21,6 +24,26 @@ function incrementMessageCounter(senderId, receiverId) {
   const current = getMessageCounter(senderId, receiverId);
   messageCounters.set(key, current + 1);
   return current + 1;
+}
+
+export function getLastReceivedSequence(senderId, receiverId) {
+  const key = `${senderId}-${receiverId}`;
+  return lastReceivedSequenceNumbers.get(key) || 0;
+}
+
+function setLastReceivedSequence(senderId, receiverId, sequenceNumber) {
+  const key = `${senderId}-${receiverId}`;
+  const current = getLastReceivedSequence(senderId, receiverId);
+  // Only update if new sequence is higher (prevent downgrade)
+  if (sequenceNumber > current) {
+    lastReceivedSequenceNumbers.set(key, sequenceNumber);
+  }
+}
+
+// Reset sequence number tracking for a sender-receiver pair (useful when re-establishing session)
+export function resetLastReceivedSequence(senderId, receiverId) {
+  const key = `${senderId}-${receiverId}`;
+  lastReceivedSequenceNumbers.delete(key);
 }
 
 // Unique message structure
@@ -79,13 +102,25 @@ export async function decryptMessage(encryptedMessage, sessionKey) {
   };
 }
 
-// Verify message (replay protection)
-export function verifyMessage(message, nonceTracker) {
-  // Check timestamp (5-minute window)
-  const maxAge = 5 * 60 * 1000;
-  const age = Date.now() - message.timestamp;
-  if (age > maxAge || age < 0) {
-    throw new Error('Message timestamp invalid - possible replay attack');
+// Verify message (replay protection) - ONLY call this for RECEIVED messages
+// skipTimestampCheck: set to true when loading messages from database (they're not replays, just old messages)
+// skipSequenceCheck: set to true when retrying old messages that failed decryption before
+export function verifyMessage(message, nonceTracker, skipTimestampCheck = false, skipSequenceCheck = false) {
+  // Check timestamp (5-minute window) - skip for loaded messages from database
+  if (!skipTimestampCheck) {
+    const maxAge = 10 * 60 * 1000; // 10 minutes for real-time messages
+    const age = Date.now() - message.timestamp;
+    if (age > maxAge || age < 0) {
+      throw new Error('Message timestamp invalid - possible replay attack');
+    }
+  } else {
+    // For loaded messages, still check that timestamp is reasonable (not from future, not too old)
+    // Allow up to 7 days for loaded messages (reasonable for offline message delivery)
+    const maxAgeForLoaded = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const age = Date.now() - message.timestamp;
+    if (age > maxAgeForLoaded || age < -60000) { // Allow 1 minute clock skew
+      throw new Error('Message timestamp invalid - message too old or from future');
+    }
   }
   
   // Check nonce (replay protection)
@@ -95,11 +130,22 @@ export function verifyMessage(message, nonceTracker) {
   }
   nonceTracker.add(nonceStr);
   
-  // Check sequence number
-  const senderKey = `${message.senderId}-${message.receiverId}`;
-  const lastSeq = messageCounters.get(senderKey) || 0;
-  if (message.sequenceNumber <= lastSeq) {
-    throw new Error(`Replay attack detected - sequence number ${message.sequenceNumber} <= last ${lastSeq}`);
+  // Check sequence number (for RECEIVED messages only)
+  // Skip this check when retrying old messages that failed decryption before
+  if (!skipSequenceCheck) {
+    const lastSeq = getLastReceivedSequence(message.senderId, message.receiverId);
+    if (message.sequenceNumber <= lastSeq) {
+      throw new Error(`Replay attack detected - sequence number ${message.sequenceNumber} <= last ${lastSeq}`);
+    }
+    
+    // Update last received sequence number
+    setLastReceivedSequence(message.senderId, message.receiverId, message.sequenceNumber);
+  } else {
+    // For retries, still update sequence number if this one is higher (to prevent accepting even older replays)
+    const lastSeq = getLastReceivedSequence(message.senderId, message.receiverId);
+    if (message.sequenceNumber > lastSeq) {
+      setLastReceivedSequence(message.senderId, message.receiverId, message.sequenceNumber);
+    }
   }
   
   return true;

@@ -4,7 +4,7 @@
  * All operations use Web Crypto API - 100% client-side
  */
 
-import { deriveECDHSecret, deriveKeyHKDF, generateSalt, generateNonce } from './webCrypto.js';
+import { deriveECDHSecret, deriveKeyHKDF, generateSalt, generateNonce, deriveSaltFromEphemeralKeys, getCanonicalInfoString } from './webCrypto.js';
 import { signData, verifySignature } from './signatures.js';
 
 // Unique key exchange protocol variant
@@ -53,7 +53,34 @@ export async function initiateKeyExchange(recipientPublicKey, senderPrivateKey, 
   };
 }
 
-// Complete key exchange with signature verification
+// Complete key exchange with signature verification (bidirectional)
+// ownEphemeralPrivateKey: our ephemeral private key
+// otherEphemeralPublicKey: other party's ephemeral public key
+// ownId: our user ID
+// otherId: other party's user ID
+export async function completeKeyExchangeBidirectional(
+  ownEphemeralPrivateKey,
+  ownEphemeralPublicKey,
+  otherEphemeralPublicKey,
+  ownId,
+  otherId
+) {
+  const ownPub = new Uint8Array(ownEphemeralPublicKey);
+  const otherPub = new Uint8Array(otherEphemeralPublicKey);
+  
+  const sharedSecret = await deriveECDHSecret(ownEphemeralPrivateKey, otherPub);
+  const salt = await deriveSaltFromEphemeralKeys(ownPub, otherPub);
+  const info = getCanonicalInfoString(ownId, otherId);
+  const sessionKey = await deriveKeyHKDF(sharedSecret, salt, info);
+
+  return {
+    sharedSecret: sharedSecret,
+    sessionKey: sessionKey,
+    salt: salt
+  };
+}
+
+// Complete key exchange with signature verification (legacy - for backward compatibility)
 export async function completeKeyExchange(
   ephemeralPublicKey,
   ownPrivateKey,

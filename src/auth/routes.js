@@ -22,9 +22,9 @@ export function createAuthRoutes() {
 
   // Register new user
   router.post('/register', async (req, res) => {
+    const { username, password } = req.body || {};
+    
     try {
-      const { username, password } = req.body;
-
       if (!username || !password) {
         return res.status(400).json({ error: 'Username and password required' });
       }
@@ -55,7 +55,8 @@ export function createAuthRoutes() {
       logAuthenticationAttempt(username || 'unknown', false);
       logSecurityEvent(SecurityEventType.AUTHENTICATION_FAILED, {
         error: error.message,
-        action: 'registration'
+        action: 'registration',
+        username: username || 'unknown'
       });
 
       res.status(400).json({ error: error.message });
@@ -113,6 +114,25 @@ export function createAuthRoutes() {
     res.json(user);
   });
 
+  // Get all users (for recipient selection)
+  router.get('/users', async (req, res) => {
+    try {
+      const { exclude } = req.query; // Optional: exclude current user
+      const { getAllUsers } = await import('../db/mongodb.js');
+      
+      const users = await getAllUsers(exclude);
+      
+      res.json({ 
+        success: true, 
+        users: users,
+        count: users.length 
+      });
+    } catch (error) {
+      console.error('Failed to get users:', error);
+      res.status(500).json({ error: 'Failed to get users list' });
+    }
+  });
+
   // OAuth Routes
   // Get OAuth authorization URL
   router.get('/oauth/:provider/authorize', (req, res) => {
@@ -120,11 +140,20 @@ export function createAuthRoutes() {
       const { provider } = req.params;
       const { redirect_uri, client_id } = req.query;
 
-      if (!redirect_uri || !client_id) {
-        return res.status(400).json({ error: 'redirect_uri and client_id required' });
+      if (!redirect_uri) {
+        return res.status(400).json({ error: 'redirect_uri required' });
       }
 
-      const { url, state } = getOAuthUrl(provider, redirect_uri, client_id);
+      // Use client_id from query or fallback to environment variable
+      const clientId = client_id || process.env[`OAUTH_${provider.toUpperCase()}_CLIENT_ID`];
+      
+      if (!clientId) {
+        return res.status(400).json({ 
+          error: 'OAuth client_id not configured. Please set OAUTH_GOOGLE_CLIENT_ID in .env file or provide client_id parameter.' 
+        });
+      }
+
+      const { url, state } = getOAuthUrl(provider, redirect_uri, clientId);
 
       res.json({
         authorizationUrl: url,
@@ -139,10 +168,14 @@ export function createAuthRoutes() {
   router.get('/oauth/:provider/callback', async (req, res) => {
     try {
       const { provider } = req.params;
-      const { code, state, redirect_uri } = req.query;
+      const { code, state, redirect_uri, error } = req.query;
 
-      if (!code || !state) {
-        return res.status(400).json({ error: 'code and state required' });
+      // Handle OAuth cancellation or error from provider
+      if (error || !code || !state) {
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const errorMessage = error || 'OAuth authentication was cancelled';
+        const redirectUrl = `${frontendUrl}/oauth/callback?success=false&error=${encodeURIComponent(errorMessage)}`;
+        return res.redirect(redirectUrl);
       }
 
       // Verify state
